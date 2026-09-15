@@ -1,0 +1,5 @@
+openai
+tiktoken
+pexpect
+docker
+swebench==4.1.0

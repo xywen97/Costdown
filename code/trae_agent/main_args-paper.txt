@@ -1,0 +1,1 @@
+design_space/paper_gpt_5_6_terra_gpt_5_6_luna|swebench-verified-appr100|{"mode": "ours", "model": "gpt-5.6-luna", "fix_model": "gpt-5.6-terra"}

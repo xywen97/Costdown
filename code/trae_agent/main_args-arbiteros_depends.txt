@@ -1,0 +1,1 @@
+design_space/arbiteros_depends_llm_deepseek_v4_flash|swebench-verified-appr100|{"mode": "arbiteros_depends", "model": "deepseek-v4-flash", "fix_model": "deepseek-v4-flash", "protect_first_steps": 2, "protect_recent_steps": 2, "min_step_chars": 400}

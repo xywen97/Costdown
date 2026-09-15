@@ -1,0 +1,30 @@
+design_space/baseline|swebench-verified-appr100|{"mode": "skip"}
+design_space/play_random|swebench-verified-appr100|{"mode": "random"}
+design_space/play_lingua|swebench-verified-appr100|{"mode": "lingua"}
+design_space/play_delete|swebench-verified-appr100|{"mode": "delete"}
+
+design_space/llm_claude35haiku|swebench-verified-appr100|{"mode": "ours", "model": "claude35-haiku"}
+design_space/llm_gemini25flash|swebench-verified-appr100|{"mode": "ours", "model": "gemini-2.5-flash"}
+design_space/llm_gpt5mini|swebench-verified-appr100|{"mode": "ours", "model": "gpt-5-mini-2025-08-07"}
+design_space/llm_deepseekv3|swebench-verified-appr100|{"mode": "ours", "model": "deepseek-chat"}
+design_space/llm_qwen3|swebench-verified-appr100|{"mode": "ours", "model": "qwen3-235b-a22b-instruct-2507"}
+
+design_space/threshold_0|swebench-verified-appr100|{"mode": "ours", "threshold": 0}
+design_space/threshold_250|swebench-verified-appr100|{"mode": "ours", "threshold": 250}
+design_space/threshold_1000|swebench-verified-appr100|{"mode": "ours", "threshold": 1000}
+design_space/threshold_2000|swebench-verified-appr100|{"mode": "ours", "threshold": 2000}
+design_space/turn_0|swebench-verified-appr100|{"mode": "ours", "ctx_after": 0}
+design_space/turn_1|swebench-verified-appr100|{"mode": "ours", "ctx_after": 1}
+design_space/turn_3|swebench-verified-appr100|{"mode": "ours", "ctx_after": 3}
+design_space/before_0|swebench-verified-appr100|{"mode": "ours", "ctx_before": 0}
+design_space/before_2|swebench-verified-appr100|{"mode": "ours", "ctx_before": 2}
+
+eval/baseline_for_claude4|swebench-verified-eval200|{"mode": "skip"}
+eval/gpt5mini_for_claude4|swebench-verified-eval200|{"mode": "ours"}
+eval/baseline_for_gemini25pro|swebench-verified-eval200|{"mode": "skip", "fix_model": "gemini-2.5-pro"}
+eval/gpt5mini_for_gemini25pro|swebench-verified-eval200|{"mode": "ours", "fix_model": "gemini-2.5-pro"}
+
+multi/baseline|multiswebench-flash|{"mode": "skip"}
+multi/llm_gpt5mini|multiswebench-flash|{"mode": "ours"}
+multi/baseline_for_gemini25pro|multiswebench-flash|{"mode": "skip", "fix_model": "gemini-2.5-pro"}
+multi/gpt5mini_for_gemini25pro|multiswebench-flash|{"mode": "ours", "fix_model": "gemini-2.5-pro"}
