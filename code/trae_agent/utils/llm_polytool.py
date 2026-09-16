@@ -57,6 +57,51 @@ def _flatten_message_content(content) -> str:
     return str(content)
 
 
+def _content_has_cache_breakpoint(content) -> bool:
+    """True if chat content carries Claude cache_control or OpenAI prompt_cache_breakpoint."""
+    if not isinstance(content, list):
+        return False
+    for part in content:
+        if not isinstance(part, dict):
+            continue
+        cc = part.get('cache_control')
+        if isinstance(cc, dict) and cc.get('type') == 'ephemeral':
+            return True
+        bp = part.get('prompt_cache_breakpoint')
+        if isinstance(bp, dict) and bp.get('mode') == 'explicit':
+            return True
+    return False
+
+
+def _responses_input_text_parts(content, *, with_breakpoint: bool = False) -> list[dict]:
+    """Build Responses input_text parts; text is identical to flattened chat content."""
+    text = _flatten_message_content(content)
+    part = {'type': 'input_text', 'text': text}
+    if with_breakpoint:
+        part['prompt_cache_breakpoint'] = {'mode': 'explicit'}
+    return [part]
+
+
+def _responses_message_content(content, *, with_breakpoint: bool = False):
+    """
+    Role-message content for Responses.
+    Plain string when no breakpoint (same as before); structured input_text when marking cache.
+    """
+    if with_breakpoint:
+        return _responses_input_text_parts(content, with_breakpoint=True)
+    return _flatten_message_content(content)
+
+
+def _responses_tool_output(content, *, with_breakpoint: bool = False):
+    """
+    function_call_output.output: plain string, or input_text list when placing a GPT-5.6 breakpoint
+    (official shape for caching the prefix through the last tool result, before turn reminder).
+    """
+    if with_breakpoint:
+        return _responses_input_text_parts(content, with_breakpoint=True)
+    return _flatten_message_content(content) or ''
+
+
 def _chat_tools_to_responses_tools(tools):
     """Chat Completions tool schema -> Responses API flat function tools."""
     out = []
@@ -92,20 +137,40 @@ def _clean_responses_item(item: dict) -> dict:
 
 
 def _chat_messages_to_responses_input(messages):
-    """Convert our chat-style history into Responses `instructions` + `input`."""
+    """
+    Convert chat-style history into Responses `instructions` + `input`.
+
+    Preserves model-visible text from the Chat Completions layout used by
+    format_messages / traj_analyzer. Maps Claude `cache_control: ephemeral` on
+    content blocks to GPT-5.6 `prompt_cache_breakpoint: {mode: explicit}` so the
+    breakpoint stays on the last stable tool/system content, with the turn
+    reminder remaining after it (same relative placement as the original agent).
+    """
     instructions_parts = []
     input_items = []
 
     for msg in messages:
         role = msg.get('role')
+        content = msg.get('content')
+        has_bp = _content_has_cache_breakpoint(content)
+
         if role == 'system':
-            instructions_parts.append(_flatten_message_content(msg.get('content')))
+            text = _flatten_message_content(content)
+            if has_bp:
+                # Top-level `instructions` cannot carry prompt_cache_breakpoint.
+                # Same text as developer input_text (Responses-native for analyzer sys cache).
+                input_items.append({
+                    'role': 'developer',
+                    'content': _responses_input_text_parts(text, with_breakpoint=True),
+                })
+            elif text:
+                instructions_parts.append(text)
             continue
 
         if role == 'user':
             input_items.append({
                 'role': 'user',
-                'content': _flatten_message_content(msg.get('content')),
+                'content': _responses_message_content(content, with_breakpoint=has_bp),
             })
             continue
 
@@ -115,9 +180,12 @@ def _chat_messages_to_responses_input(messages):
                 if isinstance(item, dict):
                     input_items.append(_clean_responses_item(item))
 
-            text = _flatten_message_content(msg.get('content'))
-            if text:
-                input_items.append({'role': 'assistant', 'content': text})
+            text = _flatten_message_content(content)
+            if text or has_bp:
+                input_items.append({
+                    'role': 'assistant',
+                    'content': _responses_message_content(content, with_breakpoint=has_bp),
+                })
 
             for tc in msg.get('tool_calls') or []:
                 fn = tc.get('function') or {}
@@ -133,7 +201,7 @@ def _chat_messages_to_responses_input(messages):
             input_items.append({
                 'type': 'function_call_output',
                 'call_id': msg.get('tool_call_id'),
-                'output': _flatten_message_content(msg.get('content')) or '',
+                'output': _responses_tool_output(content, with_breakpoint=has_bp),
             })
             continue
 
@@ -143,6 +211,51 @@ def _chat_messages_to_responses_input(messages):
 
     instructions = '\n\n'.join(p for p in instructions_parts if p).strip() or None
     return instructions, input_items
+
+
+def _input_has_explicit_breakpoint(input_items) -> bool:
+    for it in input_items or []:
+        if not isinstance(it, dict):
+            continue
+        content = it.get('content')
+        if isinstance(content, list):
+            for part in content:
+                if isinstance(part, dict) and isinstance(part.get('prompt_cache_breakpoint'), dict):
+                    return True
+        output = it.get('output')
+        if isinstance(output, list):
+            for part in output:
+                if isinstance(part, dict) and isinstance(part.get('prompt_cache_breakpoint'), dict):
+                    return True
+    return False
+
+
+def _stable_prompt_cache_key(model: str, instructions, tools, input_items) -> str:
+    """
+    Session key for GPT-5.6 cache routing.
+
+    - Agent (has tools): stable across turns — model + tools + instructions + first user (issue).
+    - Analyzer (no tools): stable across compress calls — model + developer/system text only,
+      so the changing per-step user payload does not split cache routing.
+    """
+    stable = {
+        'model': model,
+        'instructions': instructions or '',
+        'tools': tools or [],
+    }
+    if tools:
+        for it in input_items or []:
+            if isinstance(it, dict) and it.get('role') == 'user':
+                stable['first_user'] = _flatten_message_content(it.get('content'))
+                break
+    else:
+        for it in input_items or []:
+            if isinstance(it, dict) and it.get('role') == 'developer':
+                stable['developer'] = _flatten_message_content(it.get('content'))
+                break
+    blob = json.dumps(stable, sort_keys=True, ensure_ascii=False)
+    digest = hashlib.sha256(blob.encode()).hexdigest()[:24]
+    return f'trae:{model}:{digest}'
 
 
 def _responses_output_to_chat_choice(output_items):
@@ -499,6 +612,7 @@ def send_request_openai_responses(base_url, api_key):
             max_output_tokens = kwargs.pop('max_tokens', None) or kwargs.pop('max_completion_tokens', None) or 8192
 
         instructions, input_items = _chat_messages_to_responses_input(messages)
+        responses_tools = _chat_tools_to_responses_tools(tools) if tools else None
         data = {
             'model': model,
             'input': input_items,
@@ -507,8 +621,25 @@ def send_request_openai_responses(base_url, api_key):
         }
         if instructions:
             data['instructions'] = instructions
-        if tools:
-            data['tools'] = _chat_tools_to_responses_tools(tools)
+        if responses_tools:
+            data['tools'] = responses_tools
+
+        # GPT-5.6 prompt cache: stable session key + cache options.
+        # Agent (tools): implicit mode — explicit breakpoint stays on last tool
+        #   (from cache_control), reminder remains after it; earlier eligible
+        #   endings remain readable across turns.
+        # Analyzer (no tools, sys breakpoint): explicit-only — cache the stable
+        #   developer/system prefix without rewriting the changing user payload.
+        if 'prompt_cache_key' not in kwargs:
+            data['prompt_cache_key'] = _stable_prompt_cache_key(
+                model, instructions, responses_tools, input_items,
+            )
+        if 'prompt_cache_options' not in kwargs:
+            if (not responses_tools) and _input_has_explicit_breakpoint(input_items):
+                data['prompt_cache_options'] = {'mode': 'explicit', 'ttl': '30m'}
+            else:
+                data['prompt_cache_options'] = {'mode': 'implicit', 'ttl': '30m'}
+
         # Allow callers to override / extend (e.g. reasoning.mode later).
         data.update(kwargs)
 
