@@ -172,7 +172,7 @@ def worker(task_queue, lock, single_inst_mode):
         Sandbox.sweep_orphans()
 
 def main(args, lock):
-    num_processes = 3  # 4C/15G machine: safe=2, max~3; was 0 (sequential) / 9 (paper default)
+    num_processes = 4  # 4C/15G machine: safe=2, max~3; was 0 (sequential) / 9 (paper default)
 
     SPECIFIC_ID = os.environ.get('INSTANCE_ID')
     if SPECIFIC_ID:

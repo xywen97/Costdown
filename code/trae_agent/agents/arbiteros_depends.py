@@ -8,14 +8,19 @@ Identity / depends_on (from the simplified depends experiment):
   - Model cites priors via [depends_on ...]
 
 Prune policy (hybrid — default):
-  - Build a live frontier from protect windows + depends_on (+ shallow hops)
+  - Keep set = {user, current step} ∪ current step's *direct* depends_on only
+    (no protect_first / protect_recent / hop expansion). Steps no longer cited
+    by the latest depends_on become compressible.
   - On-frontier steps: KEEP tool outputs intact (success-oriented)
   - Off-frontier steps: do NOT delete the whole step; heuristically
     compress/fold tool results only (cost-oriented), reusing arbiteros.py
   - Optional legacy whole-step DROP via off_frontier_action=drop
 
-Modes: arbiteros_depends | arbiteros_hybrid (same implementation; hybrid
-defaults to compress).
+Prune policy (arbiteros_depends):
+  - Build a live frontier from protect windows + depends_on (+ shallow hops)
+
+Modes: arbiteros_depends | arbiteros_hybrid (shared compress/drop path;
+hybrid uses the direct-depends keep rule above).
 """
 
 from __future__ import annotations
@@ -104,6 +109,7 @@ def is_enabled(analysis_args: dict | None = None) -> bool:
 
 @dataclass
 class DependsConfig:
+    mode: str = ""  # arbiteros_hybrid | arbiteros_depends | ...
     protect_first_steps: int = 2
     protect_recent_steps: int = 3
     min_step_chars: int = 400  # only for legacy drop
@@ -134,7 +140,7 @@ class DependsStats:
 def config_from_analysis_args(analysis_args: dict | None = None) -> DependsConfig:
     args = analysis_args or {}
     mode = _mode_name(args) or str(args.get("mode", "")).strip()
-    cfg = DependsConfig()
+    cfg = DependsConfig(mode=mode)
 
     # hybrid mode defaults to compress; pure depends can still request drop
     if mode == "arbiteros_hybrid":
@@ -371,10 +377,37 @@ def stamp_all_steps(mgr: MessageManager) -> None:
 # ---------------------------------------------------------------------------
 
 
+def _assistant_depends(mgr: MessageManager, step_idx: int) -> list[str]:
+    """Parse/cache depends_on for one step's assistant message."""
+    if step_idx < 0 or step_idx >= len(mgr.steps):
+        return []
+    assistant = next(
+        (m for m in mgr.steps[step_idx] if m.get("role") == "assistant"), None
+    )
+    if not assistant:
+        return []
+    deps = assistant.get("agent_depends_on")
+    if deps is None:
+        deps = collect_depends_on(assistant)
+        assistant["agent_depends_on"] = deps
+    return list(deps or [])
+
+
 def build_keep_set(mgr: MessageManager, config: DependsConfig) -> set[str]:
     n = len(mgr.steps)
     keep: set[str] = {"user"}
     if n == 0:
+        return keep
+
+    # Hybrid: keep only the current step + its *direct* depends_on (and user).
+    # Steps no longer cited by the latest depends_on become compressible.
+    # Example: step_5 depends_on=[user, step_2, step_3, step_4]
+    #   -> keep={user, step_2, step_3, step_4, step_5}  (not step_0/step_1)
+    if config.mode == "arbiteros_hybrid":
+        cur = n - 1
+        keep.add(step_id(cur))
+        for d in _assistant_depends(mgr, cur):
+            keep.add(d)
         return keep
 
     first_n = min(config.protect_first_steps, n)
@@ -389,18 +422,10 @@ def build_keep_set(mgr: MessageManager, config: DependsConfig) -> set[str]:
     seed_steps = set(range(first_n)) | set(range(recent_from, n))
     edge_index: dict[str, list[str]] = {}
     for i in range(n):
-        assistant = next(
-            (m for m in mgr.steps[i] if m.get("role") == "assistant"), None
-        )
-        if not assistant:
-            continue
-        deps = assistant.get("agent_depends_on")
-        if deps is None:
-            deps = collect_depends_on(assistant)
-            assistant["agent_depends_on"] = deps
-        edge_index[step_id(i)] = list(deps or [])
+        deps = _assistant_depends(mgr, i)
+        edge_index[step_id(i)] = deps
         if i in seed_steps:
-            for d in deps or []:
+            for d in deps:
                 keep.add(d)
 
     # Shallow transitive expansion along depends_on (helps "only previous step" chains)
