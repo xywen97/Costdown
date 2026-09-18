@@ -80,7 +80,7 @@ out_name|benchmark|arg_json
 | Field | Meaning |
 | --- | --- |
 | `out_name` | Output dir under `code/out/<out_name>/` |
-| `benchmark` | `swebench-verified-appr100`, `swebench-verified-eval200`, or `multiswebench-flash` |
+| `benchmark` | `swebench-verified-appr100`, `swebench-verified-eval200`, `swebench-verified-quick10`, or `multiswebench-flash` |
 | `arg_json` | Passed as env `TRAJ_ANALYSIS` (mode / models / thresholds) |
 
 Blank lines and lines starting with `#` are skipped.

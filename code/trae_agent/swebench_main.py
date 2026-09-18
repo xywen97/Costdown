@@ -194,6 +194,7 @@ def main(args, lock):
         subset_fn = {
             'swebench-verified-appr100': '../subjects/approach_100.json',
             'swebench-verified-eval200': '../subjects/eval_200.json',
+            'swebench-verified-quick10': '../subjects/quick_validation_10.json',
         }[args.benchmark]
 
         with open(subset_fn, 'r') as file:

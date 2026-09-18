@@ -8,9 +8,10 @@ Identity / depends_on (from the simplified depends experiment):
   - Model cites priors via [depends_on ...]
 
 Prune policy (hybrid — default):
-  - Keep set = {user, current step} ∪ current step's *direct* depends_on only
-    (no protect_first / protect_recent / hop expansion). Steps no longer cited
-    by the latest depends_on become compressible.
+  - Always keep the configured first and recent step windows.
+  - Starting from every recent step, follow depends_on edges backwards for
+    exactly frontier_hops levels and add every reached step to the keep set.
+    Steps outside that set become compressible.
   - On-frontier steps: KEEP tool outputs intact (success-oriented)
   - Off-frontier steps: do NOT delete the whole step; heuristically
     compress/fold tool results only (cost-oriented), reusing arbiteros.py
@@ -20,7 +21,7 @@ Prune policy (arbiteros_depends):
   - Build a live frontier from protect windows + depends_on (+ shallow hops)
 
 Modes: arbiteros_depends | arbiteros_hybrid (shared compress/drop path;
-hybrid uses the direct-depends keep rule above).
+hybrid uses the recent-frontier keep rule above).
 """
 
 from __future__ import annotations
@@ -113,7 +114,7 @@ class DependsConfig:
     protect_first_steps: int = 2
     protect_recent_steps: int = 3
     min_step_chars: int = 400  # only for legacy drop
-    frontier_hops: int = 2  # expand depends_on citations this many hops
+    frontier_hops: int = 2  # total depends_on depth from recent steps
     # compress (default, hybrid) | drop (legacy whole-step delete)
     off_frontier_action: str = "compress"
     # heuristic compress knobs (off-frontier tool results only)
@@ -399,17 +400,6 @@ def build_keep_set(mgr: MessageManager, config: DependsConfig) -> set[str]:
     if n == 0:
         return keep
 
-    # Hybrid: keep only the current step + its *direct* depends_on (and user).
-    # Steps no longer cited by the latest depends_on become compressible.
-    # Example: step_5 depends_on=[user, step_2, step_3, step_4]
-    #   -> keep={user, step_2, step_3, step_4, step_5}  (not step_0/step_1)
-    if config.mode == "arbiteros_hybrid":
-        cur = n - 1
-        keep.add(step_id(cur))
-        for d in _assistant_depends(mgr, cur):
-            keep.add(d)
-        return keep
-
     first_n = min(config.protect_first_steps, n)
     recent_from = max(0, n - config.protect_recent_steps)
 
@@ -417,6 +407,31 @@ def build_keep_set(mgr: MessageManager, config: DependsConfig) -> set[str]:
         keep.add(step_id(i))
     for i in range(recent_from, n):
         keep.add(step_id(i))
+
+    if config.mode == "arbiteros_hybrid":
+        # Only the recent window seeds dependency traversal. The first window
+        # is protected but does not independently pull in its dependencies.
+        # One loop iteration is one edge: hops=1 keeps direct dependencies;
+        # hops=2 also keeps their direct dependencies.
+        frontier = {step_id(i) for i in range(recent_from, n)}
+        visited = set(frontier)
+        valid_steps = {step_id(i) for i in range(n)}
+        for _ in range(max(0, int(config.frontier_hops))):
+            nxt: set[str] = set()
+            for sid in frontier:
+                step_idx = int(sid.removeprefix("step_"))
+                for dep in _assistant_depends(mgr, step_idx):
+                    if dep == "user":
+                        keep.add(dep)
+                    elif dep in valid_steps:
+                        keep.add(dep)
+                        if dep not in visited:
+                            nxt.add(dep)
+            if not nxt:
+                break
+            visited |= nxt
+            frontier = nxt
+        return keep
 
     # Direct citations from protected seeds
     seed_steps = set(range(first_n)) | set(range(recent_from, n))

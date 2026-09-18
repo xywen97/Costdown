@@ -1,5 +1,5 @@
 watch -n 2 '
-OUT=/home/ubuntu/project/agentdiet/code/out/design_space/paper_gpt_5_6_terra_gpt_5_6_luna
+OUT=/home/ubuntu/project/agentdiet/code/out/design_space/arbiteros_hybrid_gpt_5_6_terra_fix_quick
 echo "logs(done-ish): $(ls "$OUT/log"/*.json 2>/dev/null | wc -l)  containers: $(docker ps -q | wc -l)"
 echo
 ls -lt "$OUT/output"/task_*.log 2>/dev/null | awk "\$5>0" | head -4
