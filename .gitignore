@@ -3,3 +3,10 @@ code/out/
 pi-agent-strategy/
 code/trae_agent/utils/llm_upstreams.py
 artifact.zip
+AGENTS.md
+# 各种pyc
+*.pyc
+code/trae_agent/__pycache__/*pyc
+code/trae_agent/utils/__pycache__/*pyc
+code/pi-agent-strategy/__pycache__/*pyc
+code/trae_agent/agents/__pycache__/*pyc

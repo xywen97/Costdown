@@ -23,7 +23,7 @@ do
     --patches_path "../out/$out_name/patch" \
     --output_path "../out/$out_name/output"
 
-done < main_args-arbiteros_hybrid.txt
+done < main_args-paper.txt
 
 echo "=== FINISHED"
 date

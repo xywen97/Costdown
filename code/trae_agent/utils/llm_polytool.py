@@ -82,12 +82,15 @@ def _responses_input_text_parts(content, *, with_breakpoint: bool = False) -> li
     return [part]
 
 
-def _responses_message_content(content, *, with_breakpoint: bool = False):
+def _responses_message_content(content, *, role: str, with_breakpoint: bool = False):
     """
     Role-message content for Responses.
-    Plain string when no breakpoint (same as before); structured input_text when marking cache.
+
+    Assistant history must remain plain text here: structured assistant content
+    accepts output_text/refusal, neither of which supports a prompt cache
+    breakpoint. Input roles may use structured input_text to mark a boundary.
     """
-    if with_breakpoint:
+    if role != 'assistant' and with_breakpoint:
         return _responses_input_text_parts(content, with_breakpoint=True)
     return _flatten_message_content(content)
 
@@ -146,7 +149,6 @@ def _chat_messages_to_responses_input(messages):
     breakpoint stays on the last stable tool/system content, with the turn
     reminder remaining after it (same relative placement as the original agent).
     """
-    instructions_parts = []
     input_items = []
 
     for msg in messages:
@@ -156,21 +158,27 @@ def _chat_messages_to_responses_input(messages):
 
         if role == 'system':
             text = _flatten_message_content(content)
-            if has_bp:
-                # Top-level `instructions` cannot carry prompt_cache_breakpoint.
-                # Same text as developer input_text (Responses-native for analyzer sys cache).
+            if text:
+                # Keep the original role. A Responses system input can carry a
+                # breakpoint, unlike the top-level instructions field.
                 input_items.append({
-                    'role': 'developer',
-                    'content': _responses_input_text_parts(text, with_breakpoint=True),
+                    'role': 'system',
+                    'content': _responses_message_content(
+                        content,
+                        role='system',
+                        with_breakpoint=has_bp,
+                    ),
                 })
-            elif text:
-                instructions_parts.append(text)
             continue
 
         if role == 'user':
             input_items.append({
                 'role': 'user',
-                'content': _responses_message_content(content, with_breakpoint=has_bp),
+                'content': _responses_message_content(
+                    content,
+                    role='user',
+                    with_breakpoint=has_bp,
+                ),
             })
             continue
 
@@ -184,7 +192,11 @@ def _chat_messages_to_responses_input(messages):
             if text or has_bp:
                 input_items.append({
                     'role': 'assistant',
-                    'content': _responses_message_content(content, with_breakpoint=has_bp),
+                    'content': _responses_message_content(
+                        content,
+                        role='assistant',
+                        with_breakpoint=False,
+                    ),
                 })
 
             for tc in msg.get('tool_calls') or []:
@@ -209,8 +221,7 @@ def _chat_messages_to_responses_input(messages):
         if msg.get('type'):
             input_items.append(msg)
 
-    instructions = '\n\n'.join(p for p in instructions_parts if p).strip() or None
-    return instructions, input_items
+    return None, input_items
 
 
 def _input_has_explicit_breakpoint(input_items) -> bool:
@@ -235,7 +246,7 @@ def _stable_prompt_cache_key(model: str, instructions, tools, input_items) -> st
     Session key for GPT-5.6 cache routing.
 
     - Agent (has tools): stable across turns — model + tools + instructions + first user (issue).
-    - Analyzer (no tools): stable across compress calls — model + developer/system text only,
+    - Analyzer (no tools): stable across compress calls — model + system/developer text only,
       so the changing per-step user payload does not split cache routing.
     """
     stable = {
@@ -243,16 +254,21 @@ def _stable_prompt_cache_key(model: str, instructions, tools, input_items) -> st
         'instructions': instructions or '',
         'tools': tools or [],
     }
+    stable['system'] = [
+        {
+            'role': it.get('role'),
+            'content': _flatten_message_content(it.get('content')),
+        }
+        for it in input_items or []
+        if isinstance(it, dict) and it.get('role') in {'system', 'developer'}
+    ]
     if tools:
         for it in input_items or []:
             if isinstance(it, dict) and it.get('role') == 'user':
                 stable['first_user'] = _flatten_message_content(it.get('content'))
                 break
-    else:
-        for it in input_items or []:
-            if isinstance(it, dict) and it.get('role') == 'developer':
-                stable['developer'] = _flatten_message_content(it.get('content'))
-                break
+    # Analyzer calls are routed by their stable system/developer prefix; their
+    # changing user payload intentionally stays out of the key.
     blob = json.dumps(stable, sort_keys=True, ensure_ascii=False)
     digest = hashlib.sha256(blob.encode()).hexdigest()[:24]
     return f'trae:{model}:{digest}'
@@ -624,12 +640,9 @@ def send_request_openai_responses(base_url, api_key):
         if responses_tools:
             data['tools'] = responses_tools
 
-        # GPT-5.6 prompt cache: stable session key + cache options.
-        # Agent (tools): implicit mode — explicit breakpoint stays on last tool
-        #   (from cache_control), reminder remains after it; earlier eligible
-        #   endings remain readable across turns.
-        # Analyzer (no tools, sys breakpoint): explicit-only — cache the stable
-        #   developer/system prefix without rewriting the changing user payload.
+        # GPT-5.6 prompt cache: agent calls retain the implicit breakpoint and
+        # can additionally write the latest three explicit boundaries. Analyzer
+        # calls use their single stable system boundary in explicit mode.
         if 'prompt_cache_key' not in kwargs:
             data['prompt_cache_key'] = _stable_prompt_cache_key(
                 model, instructions, responses_tools, input_items,
@@ -689,6 +702,14 @@ def send_request_openai_responses(base_url, api_key):
                         resp_json[k] = raw[k]
                 llm_cache_chat.put(hk, resp_json)
                 return resp_json
+            except openai.BadRequestError as e:
+                # Invalid schemas and parameters are deterministic; retrying the
+                # identical request only stalls an entire benchmark worker.
+                print(
+                    f"A fatal request error occurred [{model} @ {base_url} responses]: "
+                    f"{type(e).__name__}: {e}"
+                )
+                raise
             except Exception as e:
                 print(f"An error occurred [{model} @ {base_url} responses]: {type(e).__name__}: {e}")
                 if retries < max_retries:

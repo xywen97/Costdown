@@ -319,6 +319,37 @@ class MessageManager:
             for msg in msgs
         ]
 
+    @staticmethod
+    def _with_cache_breakpoint(msg):
+        """Return a message whose final text block ends an explicit cache segment."""
+        if msg.get('role') not in {'system', 'developer', 'user', 'tool'}:
+            return msg
+
+        content = msg.get('content')
+        if isinstance(content, list):
+            blocks = [dict(block) if isinstance(block, dict) else block for block in content]
+            for idx in range(len(blocks) - 1, -1, -1):
+                block = blocks[idx]
+                if isinstance(block, dict) and isinstance(block.get('text'), str):
+                    blocks[idx] = {
+                        **block,
+                        'cache_control': {'type': 'ephemeral'},
+                    }
+                    break
+            else:
+                blocks.append({
+                    'type': 'text',
+                    'text': '',
+                    'cache_control': {'type': 'ephemeral'},
+                })
+        else:
+            blocks = [{
+                'type': 'text',
+                'text': content or '',
+                'cache_control': {'type': 'ephemeral'},
+            }]
+        return {**msg, 'content': blocks}
+
     def perform_erase_step(self, idx: int, content: str | None, orig: str):
         self.steps[idx] = [
             {
@@ -379,7 +410,8 @@ class MessageManager:
         }
 
     def format_messages(self):
-        msgs = [m for s in self.steps for m in self._remove_internal_fields(s)]
+        cleaned_steps = [self._remove_internal_fields(s) for s in self.steps]
+        msgs = [m for s in cleaned_steps for m in s]
 
         ret = [
             {
@@ -403,17 +435,6 @@ class MessageManager:
                     'content': f'Continue in standard tool call format.'
                 })
         else:
-            # begin a new turn: add cache control and env reminder
-            if self.USE_CACHING and msgs:
-                ret[-1] = {
-                    **msgs[-1],
-                    'content': [{
-                        'type': 'text',
-                        'text': msgs[-1]['content'],
-                        'cache_control': {'type': 'ephemeral'},
-                    }],
-                }
-
             if self.turn_reminder:
                 ret.append({
                     'role': 'user',
@@ -428,6 +449,18 @@ class MessageManager:
                 ret = decorate_outgoing_messages(self, ret)
         except Exception as exc:
             print(f'!!! arbiteros_depends decorate skipped: {exc}')
+
+        if self.USE_CACHING:
+            # Add breakpoints after decorators have finalized message content.
+            # The issue prompt is the immutable baseline. Every real tool output
+            # is another legal Responses input boundary, allowing a later
+            # history rewrite to fall back to the closest unchanged prefix.
+            # Assistant output cannot carry prompt_cache_breakpoint.
+            ret[1] = self._with_cache_breakpoint(ret[1])
+            history_end = 2 + len(msgs)
+            for msg_idx in range(2, history_end):
+                if ret[msg_idx].get('role') == 'tool':
+                    ret[msg_idx] = self._with_cache_breakpoint(ret[msg_idx])
 
         return ret
 
